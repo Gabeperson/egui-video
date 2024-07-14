@@ -26,7 +26,7 @@ use ffmpeg::media::Type;
 use ffmpeg::software::scaling::{context::Context, flag::Flags};
 use ffmpeg::util::frame::video::Video;
 use ffmpeg::{rescale, Packet, Rational, Rescale};
-use ffmpeg::{software, ChannelLayout};
+use ffmpeg::{software, ChannelLayoutMask};
 use parking_lot::Mutex;
 use ringbuf::SharedRb;
 use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
@@ -604,13 +604,15 @@ impl Player {
         );
 
         if currently_seeking {
-            let mut seek_indicator_shadow = Shadow::big_dark();
-            seek_indicator_shadow.color = seek_indicator_shadow
-                .color
-                .linear_multiply(seek_indicator_anim);
+            let seek_indicator_shadow = Shadow {
+                offset: vec2(10.0, 20.0),
+                blur: 15.0,
+                spread: 0.0,
+                color: Color32::from_black_alpha(96).linear_multiply(seek_indicator_anim),
+            };
             let spinner_size = 20. * seek_indicator_anim;
             ui.painter()
-                .add(seek_indicator_shadow.tessellate(frame_response.rect, Rounding::ZERO));
+                .add(seek_indicator_shadow.as_shape(frame_response.rect, Rounding::ZERO));
             ui.put(
                 Rect::from_center_size(frame_response.rect.center(), Vec2::splat(spinner_size)),
                 Spinner::new().size(spinner_size),
@@ -682,17 +684,21 @@ impl Player {
         let mut duration_text_font_id = FontId::default();
         duration_text_font_id.size = 14.;
 
-        let mut shadow = Shadow::big_light();
-        shadow.color = shadow.color.linear_multiply(seekbar_anim_frac);
+        let shadow = Shadow {
+            offset: vec2(10.0, 20.0),
+            blur: 15.0,
+            spread: 0.0,
+            color: Color32::from_black_alpha(25).linear_multiply(seekbar_anim_frac),
+        };
 
         let mut shadow_rect = frame_response.rect;
         shadow_rect.set_top(shadow_rect.bottom() - seekbar_offset - 10.);
-        let shadow_mesh = shadow.tessellate(shadow_rect, Rounding::ZERO);
 
         let fullseekbar_color = Color32::GRAY.linear_multiply(seekbar_anim_frac);
         let seekbar_color = Color32::WHITE.linear_multiply(seekbar_anim_frac);
 
-        ui.painter().add(shadow_mesh);
+        ui.painter()
+            .add(shadow.as_shape(shadow_rect, Rounding::ZERO));
 
         ui.painter().rect_filled(
             fullseekbar_rect,
@@ -950,7 +956,7 @@ impl Player {
                 audio_decoder.channel_layout(),
                 audio_decoder.rate(),
                 audio_device.0.spec().format.to_sample(),
-                ChannelLayout::STEREO,
+                ChannelLayoutMask::STEREO,
                 audio_device.0.spec().freq as u32,
             )?;
 
@@ -1263,7 +1269,8 @@ pub trait Streamer: Send {
     }
     /// Recieve the next packet of the stream.
     fn recieve_next_packet(&mut self) -> Result<()> {
-        if let Some((stream, packet)) = self.input_context().packets().next() {
+        if let Some(packet) = self.input_context().packets().next() {
+            let (stream, packet) = packet?;
             let time_base = stream.time_base();
             if stream.index() == self.stream_index() {
                 self.decoder().send_packet(&packet)?;
@@ -1398,7 +1405,7 @@ impl Streamer for AudioStreamer {
             new_decoder.channel_layout(),
             new_decoder.rate(),
             self.resampler.output().format,
-            ChannelLayout::STEREO,
+            ChannelLayoutMask::STEREO,
             self.resampler.output().rate,
         )
         .unwrap();
@@ -1492,7 +1499,8 @@ impl Streamer for SubtitleStreamer {
         &self.player_state
     }
     fn recieve_next_packet(&mut self) -> Result<()> {
-        if let Some((stream, packet)) = self.input_context().packets().next() {
+        if let Some(packet) = self.input_context().packets().next() {
+            let (stream, packet) = packet?;
             let time_base = stream.time_base();
             if stream.index() == self.stream_index() {
                 if let Some(dts) = packet.dts() {
@@ -1589,14 +1597,17 @@ fn packed<T: ffmpeg::frame::audio::Sample>(frame: &ffmpeg::frame::Audio) -> &[T]
         panic!("data is not packed");
     }
 
-    if !<T as ffmpeg::frame::audio::Sample>::is_valid(frame.format(), frame.channels()) {
+    if !<T as ffmpeg::frame::audio::Sample>::is_valid(
+        frame.format(),
+        frame.channel_layout().channels() as u16,
+    ) {
         panic!("unsupported type");
     }
 
     unsafe {
         std::slice::from_raw_parts(
             (*frame.as_ptr()).data[0] as *const T,
-            frame.samples() * frame.channels() as usize,
+            frame.samples() * frame.channel_layout().channels() as usize,
         )
     }
 }
